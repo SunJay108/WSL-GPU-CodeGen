@@ -67,6 +67,8 @@ def stream_chat(messages: List[dict], max_tokens: int, should_stop: Callable[[],
         f"{LLAMA_URL}/v1/chat/completions", json=payload, stream=True, timeout=(10, 600)
     ) as response:
         response.raise_for_status()
+        # The SSE content type has no charset, so requests would decode it as Latin-1.
+        response.encoding = "utf-8"
 
         for line in response.iter_lines(decode_unicode=True):
             if should_stop():

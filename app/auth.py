@@ -1,24 +1,27 @@
+"""
+Accounts and sessions: PBKDF2 password hashes, a random session token in an
+HttpOnly cookie (only its SHA-256 is stored), login throttling, and the
+/api/auth/* endpoints used by the chat page.
+"""
+
 import base64
 import hashlib
 import hmac
-import html
 import logging
-import os
 import re
 import secrets
 import threading
 import time
 from collections import defaultdict, deque
-from string import Template
 from typing import Optional
 
-import gradio as gr
-from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
-from starlette.concurrency import run_in_threadpool
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 
+import audit
 import db
-from config import ADMIN_PASSWORD, ADMIN_USERNAME, COOKIE_SECURE, SESSION_HOURS
+from config import ADMIN_PASSWORD, ADMIN_USERNAME, ALLOW_SIGNUP, COOKIE_SECURE, SESSION_HOURS
 
 log = logging.getLogger("auth")
 
@@ -26,8 +29,6 @@ SESSION_COOKIE = "codegen_session"
 USERNAME_RE = re.compile(r"^[A-Za-z0-9_.-]{3,32}$")
 MIN_PASSWORD_LENGTH = 8
 PBKDF2_ITERATIONS = 310_000
-
-TEMPLATE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates")
 
 # =========================================
 # Passwords
@@ -76,8 +77,12 @@ def authenticate(username: str, password: str):
         return None
     return user
 
+
+def public(user) -> dict:
+    return {"id": user["id"], "username": user["username"], "role": user["role"]}
+
 # =========================================
-# Sessions (random token in a cookie, SHA-256 of it in the database)
+# Sessions
 # =========================================
 
 def token_hash(token: str) -> str:
@@ -92,57 +97,28 @@ def start_session(user_id: int) -> str:
     return token
 
 
-def request_token(request) -> Optional[str]:
-    cookies = getattr(request, "cookies", None) or {}
-    return cookies.get(SESSION_COOKIE)
-
-
-def user_from_request(request):
-    """The logged-in, active user for a FastAPI or Gradio request, or None."""
-    token = request_token(request)
+def user_from_request(request: Request):
+    token = request.cookies.get(SESSION_COOKIE)
     if not token:
         return None
     return db.session_user(token_hash(token), int(time.time()))
 
 
-def require_user(request: gr.Request) -> dict:
+def current_user(request: Request) -> dict:
     user = user_from_request(request)
     if user is None:
-        raise gr.Error("Your session has expired. Please reload the page and sign in again.")
+        raise HTTPException(401, "Please sign in.")
     return dict(user)
 
 
-def require_admin(request: gr.Request) -> dict:
-    user = require_user(request)
+def admin_user(user: dict = Depends(current_user)) -> dict:
     if user["role"] != "admin":
-        raise gr.Error("Administrator access required.")
+        raise HTTPException(403, "Administrators only.")
     return user
 
 
-def change_password(request: gr.Request, current: str, new: str) -> Optional[str]:
-    """Returns an error message, or None on success. Other sessions are signed out."""
-    user = require_user(request)
-    if not verify_password(current or "", user["password_hash"]):
-        return "Current password is incorrect."
-    error = password_error(new)
-    if error:
-        return error
-    db.update_user(user["id"], password_hash=hash_password(new))
-    db.delete_user_sessions(user["id"], keep_token_hash=token_hash(request_token(request)))
-    return None
-
-# =========================================
-# Gradio auth dependencies
-# =========================================
-
-def chat_dependency(request: Request) -> Optional[str]:
-    user = user_from_request(request)
-    return user["username"] if user else None
-
-
-def admin_dependency(request: Request) -> Optional[str]:
-    user = user_from_request(request)
-    return user["username"] if user and user["role"] == "admin" else None
+def client_ip(request: Request) -> Optional[str]:
+    return request.client.host if request.client else None
 
 # =========================================
 # First admin account
@@ -161,7 +137,7 @@ def ensure_admin():
     log.warning("Created administrator account '%s'.", username)
     if not ADMIN_PASSWORD:
         log.warning("Generated password: %s", password)
-        log.warning("Sign in and change it from the user menu.")
+        log.warning("Sign in and change it from the sidebar.")
     if adopted:
         log.warning("Assigned %d existing chat(s) to '%s'.", adopted, username)
     log.warning("=" * 60)
@@ -202,82 +178,98 @@ class LoginThrottle:
 throttle = LoginThrottle()
 
 # =========================================
-# Routes & page gate
+# /api/auth/*
 # =========================================
 
-def render_login(error: str = "", username: str = "") -> str:
-    with open(os.path.join(TEMPLATE_DIR, "login.html"), encoding="utf-8") as f:
-        page = Template(f.read())
-    error_block = f'<div class="error" role="alert">{html.escape(error)}</div>' if error else ""
-    return page.safe_substitute(error_block=error_block, username=html.escape(username))
+class Credentials(BaseModel):
+    username: str
+    password: str
 
 
-def install_routes(app: FastAPI):
-    @app.get("/login", response_class=HTMLResponse)
-    async def login_page(request: Request):
-        if await run_in_threadpool(user_from_request, request):
-            return RedirectResponse("/", status_code=303)
-        return HTMLResponse(render_login())
-
-    @app.post("/login")
-    async def login_submit(request: Request):
-        form = await request.form()
-        username = str(form.get("username", "")).strip()[:64]
-        password = str(form.get("password", ""))[:256]
-        key = (request.client.host if request.client else "", username.lower())
-
-        if throttle.blocked(key):
-            return HTMLResponse(
-                render_login("Too many failed attempts. Try again in 15 minutes.", username), status_code=429
-            )
-
-        user = await run_in_threadpool(authenticate, username, password)
-        if user is None:
-            throttle.fail(key)
-            return HTMLResponse(render_login("Incorrect username or password.", username), status_code=401)
-
-        throttle.reset(key)
-        token = await run_in_threadpool(start_session, user["id"])
-        response = RedirectResponse("/", status_code=303)
-        response.set_cookie(
-            SESSION_COOKIE, token, max_age=SESSION_HOURS * 3600,
-            httponly=True, samesite="lax", secure=COOKIE_SECURE, path="/",
-        )
-        return response
-
-    @app.get("/logout")
-    async def logout(request: Request):
-        token = request_token(request)
-        if token:
-            await run_in_threadpool(db.delete_session, token_hash(token))
-        response = RedirectResponse("/login", status_code=303)
-        response.delete_cookie(SESSION_COOKIE, path="/")
-        return response
+class PasswordChange(BaseModel):
+    current: str
+    new: str
 
 
-class PageGate:
-    """
-    ASGI middleware for browser page loads: anonymous visitors go to /login and
-    non-admins are kept out of /admin. API calls are guarded by the Gradio auth
-    dependencies and by the per-handler checks.
-    """
+router = APIRouter()
 
-    PAGES = ("/", "/admin", "/admin/")
 
-    def __init__(self, app):
-        self.app = app
+def signed_in(user, request: Request) -> JSONResponse:
+    token = start_session(user["id"])
+    response = JSONResponse({"user": public(user)})
+    response.set_cookie(SESSION_COOKIE, token, max_age=SESSION_HOURS * 3600,
+                        httponly=True, samesite="lax", secure=COOKIE_SECURE, path="/")
+    return response
 
-    async def __call__(self, scope, receive, send):
-        if scope["type"] == "http" and scope["method"] in ("GET", "HEAD") and scope["path"] in self.PAGES:
-            user = await run_in_threadpool(user_from_request, Request(scope))
-            target = None
-            if user is None:
-                target = "/login"
-            elif scope["path"].startswith("/admin") and user["role"] != "admin":
-                target = "/"
-            elif scope["path"] == "/admin":
-                target = "/admin/"
-            if target:
-                await RedirectResponse(target, status_code=303)(scope, receive, send)
-                return
-        await self.app(scope, receive, send)
+
+@router.get("/api/auth/state")
+def auth_state(request: Request):
+    user = user_from_request(request)
+    return {"user": public(user) if user else None, "allow_signup": ALLOW_SIGNUP}
+
+
+@router.post("/api/auth/login")
+def login(body: Credentials, request: Request):
+    username = body.username.strip()[:64]
+    key = (client_ip(request), username.lower())
+    if throttle.blocked(key):
+        raise HTTPException(429, "Too many failed attempts. Try again in 15 minutes.")
+
+    user = authenticate(username, body.password[:256])
+    if user is None:
+        throttle.fail(key)
+        audit.log("login_failed", username=username, ip=client_ip(request),
+                  detail={"reason": "wrong username or password, or disabled account"})
+        raise HTTPException(401, "Incorrect username or password.")
+
+    throttle.reset(key)
+    audit.log("login", user, ip=client_ip(request))
+    return signed_in(user, request)
+
+
+@router.post("/api/auth/signup")
+def signup(body: Credentials, request: Request):
+    if not ALLOW_SIGNUP:
+        raise HTTPException(403, "Sign-up is disabled. Ask an administrator for an account.")
+    username = body.username.strip()
+    error = username_error(username) or password_error(body.password)
+    if error is None and db.get_user_by_name(username):
+        error = "That username is taken."
+    if error:
+        raise HTTPException(400, error)
+
+    db.create_user(username, hash_password(body.password), "user")
+    user = db.get_user_by_name(username)
+    audit.log("signup", user, ip=client_ip(request), detail={"role": "user"})
+    return signed_in(user, request)
+
+
+@router.post("/api/auth/logout")
+def logout(request: Request):
+    token = request.cookies.get(SESSION_COOKIE)
+    user = user_from_request(request)
+    if token:
+        db.delete_session(token_hash(token))
+    if user:
+        audit.log("logout", user, ip=client_ip(request))
+    response = JSONResponse({"ok": True})
+    response.delete_cookie(SESSION_COOKIE, path="/")
+    return response
+
+
+@router.post("/api/auth/password")
+def change_password(body: PasswordChange, request: Request, user: dict = Depends(current_user)):
+    if not verify_password(body.current, user["password_hash"]):
+        raise HTTPException(400, "Current password is incorrect.")
+    error = password_error(body.new)
+    if error:
+        raise HTTPException(400, error)
+    db.update_user(user["id"], password_hash=hash_password(body.new))
+    # Sign out every other session of this account.
+    db.delete_user_sessions(user["id"], keep_token_hash=token_hash(request.cookies.get(SESSION_COOKIE, "")))
+    audit.log("password_change", user, ip=client_ip(request))
+    return {"ok": True}
+
+
+def install(app: FastAPI):
+    app.include_router(router)

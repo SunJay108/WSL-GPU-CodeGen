@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Admin · CodeGen</title>
+  <link rel="icon" href="/static/logo.png">
+  <link rel="stylesheet" href="/static/vendor/github.min.css" media="(prefers-color-scheme: light)">
+  <link rel="stylesheet" href="/static/vendor/github-dark.min.css" media="(prefers-color-scheme: dark)">
+  <link rel="stylesheet" href="/static/app.css">
+  <link rel="stylesheet" href="/static/admin.css">
+</head>
+<body class="admin-body">
+  <header class="admin-top">
+    <div class="brand">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 7-5 5 5 5"/><path d="m16 7 5 5-5 5"/><path d="m14 4-4 16"/></svg>
+      <span>CodeGen</span>
+      <span class="role-badge">Admin</span>
+    </div>
+    <nav class="admin-tabs" role="tablist">
+      <button type="button" role="tab" data-tab="activity" aria-selected="true">Activity</button>
+      <button type="button" role="tab" data-tab="chats" aria-selected="false">Chats</button>
+      <button type="button" role="tab" data-tab="users" aria-selected="false">Users</button>
+    </nav>
+    <div class="admin-me">
+      <span id="me"></span>
+      <a class="btn" href="/">Back to chat</a>
+      <button class="btn" id="logout" type="button">Log out</button>
+    </div>
+  </header>
+
+  <main class="admin-main" id="admin-main" hidden>
+    <section class="stats" id="stats" aria-label="Overview"></section>
+
+    <!-- Activity -->
+    <section class="tab" id="tab-activity">
+      <div class="filters">
+        <label class="field">User <select id="act-user"><option value="">All users</option></select></label>
+        <label class="field">Action <select id="act-action"><option value="">All actions</option></select></label>
+        <label class="field grow">Search <input id="act-q" type="search" placeholder="Question, chat title, user…"></label>
+      </div>
+      <div class="table-wrap">
+        <table class="table">
+          <thead><tr><th>Time</th><th>User</th><th>Action</th><th>Details</th><th>Chat</th></tr></thead>
+          <tbody id="act-rows"></tbody>
+        </table>
+      </div>
+      <div class="table-foot">
+        <span class="muted" id="act-count"></span>
+        <button class="btn" id="act-more" type="button" hidden>Load more</button>
+      </div>
+    </section>
+
+    <!-- Chats -->
+    <section class="tab" id="tab-chats" hidden>
+      <div class="filters">
+        <label class="field">User <select id="chat-user"><option value="">All users</option></select></label>
+        <label class="field">Status
+          <select id="chat-status">
+            <option value="all">All chats</option>
+            <option value="active">Active</option>
+            <option value="deleted">Deleted by user</option>
+          </select>
+        </label>
+        <label class="field grow">Search <input id="chat-q" type="search" placeholder="Title or message text…"></label>
+      </div>
+      <div class="split">
+        <div class="table-wrap chat-list">
+          <table class="table">
+            <thead><tr><th>Chat</th><th>User</th><th>Questions</th><th>Updated</th></tr></thead>
+            <tbody id="chat-rows"></tbody>
+          </table>
+        </div>
+        <article class="viewer" id="viewer">
+          <p class="muted viewer-empty">Select a chat to read it.</p>
+        </article>
+      </div>
+    </section>
+
+    <!-- Users -->
+    <section class="tab" id="tab-users" hidden>
+      <form class="filters add-user" id="add-user">
+        <label class="field">Username <input id="new-username" required minlength="3" maxlength="32" autocomplete="off"></label>
+        <label class="field">Password <input id="new-password" type="password" required minlength="8" autocomplete="new-password"></label>
+        <label class="field">Role
+          <select id="new-role"><option value="user">User</option><option value="admin">Admin</option></select>
+        </label>
+        <button class="btn-primary" type="submit">Add user</button>
+      </form>
+      <div class="table-wrap">
+        <table class="table">
+          <thead><tr><th>User</th><th>Role</th><th>Status</th><th>Created</th><th>Last login</th><th>Last activity</th><th>Chats</th><th>Questions</th><th></th></tr></thead>
+          <tbody id="user-rows"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <div class="denied" id="denied" hidden>
+    <h2>Administrators only</h2>
+    <p class="muted">Your account cannot open the admin panel.</p>
+    <a class="btn" href="/">Back to chat</a>
+  </div>
+
+  <script src="/static/vendor/highlight.min.js"></script>
+  <script src="/static/common.js"></script>
+  <script src="/static/admin.js"></script>
+</body>
+</html>

@@ -1,21 +1,24 @@
 # CodeGen: offline GPU coding assistant
 
-A ChatGPT-style web app for programming help that runs entirely on your own machine.
+A chat web app for programming help that runs entirely on your own machine.
 
-- **Chat UI**: sidebar with saved chats, streaming answers, code blocks with copy buttons, light and dark themes.
-- **Accounts**: sign-in page, `admin` and `user` roles, change-password menu.
-- **Admin panel** (`/admin`): manage users, browse and delete chat history, review the moderation log.
+- **Chat UI**: chats grouped by date with search, rename and delete; answers stream in with syntax-highlighted code blocks and copy buttons; Stop, Markdown export, light and dark themes, mobile layout.
+- **Answers run on the server**: switching chats or reloading the page does not lose an answer in progress; the page picks it up again.
+- **Accounts**: sign-in page, `admin` and `user` roles, change password, optional self sign-up (`ALLOW_SIGNUP`).
+- **Admin panel** (`/admin`): activity log (sign-ins, every question with its filter verdict, chat and admin actions), all chats including ones users deleted, and user management.
 - **Code-only filter**: every question and every answer is checked by Qwen3Guard and by a topic classifier. Anything unsafe or unrelated to software development is blocked.
 
 ## Architecture
 
 ```
-Browser ──► codegen-ui  (Gradio + FastAPI, :7860)
+Browser ──► codegen-ui  (FastAPI: static HTML/CSS/JS + JSON API, :7860)
                ├──► llama-server  Qwen2.5-Coder-7B GGUF on the GPU (127.0.0.1:8080 only)
                │       slot 0: chat · slot 1: topic classifier
                └──► guard         Qwen3Guard-Gen-0.6B + Qwen3Guard-Stream-0.6B (internal :8090)
-SQLite (./data/chat_history.db): users, sessions, chats, moderation log
+SQLite (./data/chat_history.db): users, sessions, chats, messages, activity log
 ```
+
+The front end (`app/static/`) is plain HTML, CSS and JavaScript with no build step; syntax highlighting uses a bundled copy of highlight.js, so nothing is loaded from the internet.
 
 ## Requirements
 
@@ -51,7 +54,15 @@ models/
    ```
    docker compose logs codegen | grep -A3 "administrator"
    ```
-6. Open http://localhost:7860, sign in, and change the password from the user menu.
+6. Open http://localhost:7860, sign in, and change the password from the sidebar.
+
+Lost the admin password? Set a new one from the terminal:
+
+```
+docker compose exec codegen python users.py reset-password admin
+```
+
+(`users.py list` and `users.py add <name> [--admin]` are also available.)
 
 ## How filtering works
 
@@ -63,7 +74,11 @@ models/
 | Answer, while streaming | Qwen3Guard-Stream-0.6B, token by token | Unsafe output; text is shown only after it has been checked |
 | Answer, when finished | Qwen3Guard-Gen-0.6B + topic classifier | Unsafe or off-topic answers, which are withheld |
 
-If a check cannot run (for example, the guard service is down), the message is blocked, not let through. Blocked exchanges are not saved to chat history; they are recorded in the admin panel's **Moderation log**.
+If a check cannot run (for example, the guard service is down), the message is blocked, not let through. A blocked question stays in the chat with a notice saying why, but is never sent to the model as context. Every question, with the verdict and which check blocked it, is recorded in the admin panel's **Activity** log.
+
+## Chat history and privacy
+
+When users delete a chat (or all their chats), it disappears for them but is kept for administrators, who can read it in the admin panel and delete it permanently. The sign-in page tells users this.
 
 ## Configuration (`.env`)
 
@@ -78,6 +93,7 @@ If a check cannot run (for example, the guard service is down), the message is b
 | `GUARD_THREADS` | `4` | CPU threads for the guard models (more does not help: they are memory-bound) |
 | `GUARD_STREAM_INT8` | `false` | On CPU, run Qwen3Guard-Stream with int8 weights: answers stream faster, but in testing one prompt-level verdict changed (Qwen3Guard-Gen, which always runs in full precision, still blocked it) |
 | `ADMIN_USERNAME` / `ADMIN_PASSWORD` | `admin` / generated | First admin, created only when no users exist |
+| `ALLOW_SIGNUP` | `false` | Show *Create account* on the sign-in page (new accounts are normal users) |
 | `REQUIRE_ENGLISH` | `true` | Reject questions not written in English |
 | `BLOCK_CONTROVERSIAL` | `true` | Also block content Qwen3Guard rates *Controversial* |
 | `COOKIE_SECURE` | `false` | Set to `true` when serving over HTTPS |
@@ -102,9 +118,12 @@ On a 6 GB card the 7B model leaves too little VRAM, so the guard models run on t
 docker compose build --build-arg TORCH_WHEEL_URL=https://download.pytorch.org/whl/cu126/torch-2.8.0%2Bcu126-cp311-cp311-manylinux_2_28_x86_64.whl guard
 ```
 
-## Upgrading from the single-user version
+## Upgrading
 
-On first start the app migrates `data/chat_history.db` in place: it saves a backup as `chat_history.db.v0.bak`, adds the account tables, and assigns all existing chats to the first admin.
+On start the app migrates `data/chat_history.db` in place and first saves a backup named after the old schema version:
+
+- From the single-user version (`chat_history.db.v0.bak`): adds accounts and assigns all existing chats to the first admin.
+- From the Gradio version (`chat_history.db.v2.bak`): adds the activity log (the old moderation log is moved into it), soft-deleted chats and per-message status.
 
 ## Security notes
 

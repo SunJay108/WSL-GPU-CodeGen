@@ -1,15 +1,14 @@
 import os
 import shutil
 import sqlite3
-import uuid
 from contextlib import contextmanager
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import List, Optional
 
 from config import DATA_DIR
 
 DB_FILE = os.path.join(DATA_DIR, "chat_history.db")
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
@@ -34,7 +33,8 @@ CREATE TABLE IF NOT EXISTS chats (
     title TEXT,
     created_at TEXT,
     user_id INTEGER,
-    updated_at TEXT
+    updated_at TEXT,
+    deleted_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS messages (
@@ -42,19 +42,19 @@ CREATE TABLE IF NOT EXISTS messages (
     chat_id TEXT,
     role TEXT,
     content TEXT,
-    created_at TEXT
+    created_at TEXT,
+    data TEXT
 );
 
-CREATE TABLE IF NOT EXISTS moderation_log (
+CREATE TABLE IF NOT EXISTS audit_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL,
     user_id INTEGER,
-    chat_id TEXT,
-    stage TEXT NOT NULL,
-    checker TEXT NOT NULL,
-    verdict TEXT NOT NULL,
+    username TEXT,
+    action TEXT NOT NULL,
+    conversation_id TEXT,
     detail TEXT,
-    content TEXT,
-    created_at TEXT NOT NULL
+    ip TEXT
 );
 """
 
@@ -62,7 +62,8 @@ INDEXES = """
 CREATE INDEX IF NOT EXISTS idx_chats_user ON chats (user_id, updated_at);
 CREATE INDEX IF NOT EXISTS idx_messages_chat ON messages (chat_id, id);
 CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions (user_id);
-CREATE INDEX IF NOT EXISTS idx_moderation_created ON moderation_log (created_at);
+CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_log (created_at);
+CREATE INDEX IF NOT EXISTS idx_audit_user ON audit_log (user_id, id);
 """
 
 
@@ -70,9 +71,14 @@ def now() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
 
+def epoch(stamp: Optional[str]) -> Optional[int]:
+    """ISO timestamp from the database -> Unix seconds for the browser."""
+    return int(datetime.fromisoformat(stamp).timestamp()) if stamp else None
+
+
 @contextmanager
 def connect():
-    """One connection per operation: safe to use from Gradio's worker threads."""
+    """One connection per operation: safe to use from any worker thread."""
     conn = sqlite3.connect(DB_FILE, timeout=15)
     conn.row_factory = sqlite3.Row
     try:
@@ -85,6 +91,13 @@ def connect():
 # Schema & migration
 # =========================================
 
+def add_column(c, table: str, column: str, kind: str) -> bool:
+    if column in {row["name"] for row in c.execute(f"PRAGMA table_info({table})")}:
+        return False
+    c.execute(f"ALTER TABLE {table} ADD COLUMN {column} {kind}")
+    return True
+
+
 def init_db():
     os.makedirs(DATA_DIR, exist_ok=True)
     existed = os.path.exists(DB_FILE) and os.path.getsize(DB_FILE) > 0
@@ -93,20 +106,33 @@ def init_db():
         version = c.execute("PRAGMA user_version").fetchone()[0]
 
     if existed and version < SCHEMA_VERSION:
-        # The original app (schema v0) had no users; keep a copy before migrating.
         shutil.copy2(DB_FILE, f"{DB_FILE}.v{version}.bak")
 
     with connect() as c:
         c.executescript(SCHEMA)
-        chat_columns = {row["name"] for row in c.execute("PRAGMA table_info(chats)")}
-        if "user_id" not in chat_columns:
-            c.execute("ALTER TABLE chats ADD COLUMN user_id INTEGER")
-        if "updated_at" not in chat_columns:
-            c.execute("ALTER TABLE chats ADD COLUMN updated_at TEXT")
+
+        # v0 (single-user app) -> v2: chats belong to users.
+        add_column(c, "chats", "user_id", "INTEGER")
+        if add_column(c, "chats", "updated_at", "TEXT"):
             c.execute("""
                 UPDATE chats SET updated_at = COALESCE(
                     (SELECT MAX(created_at) FROM messages m WHERE m.chat_id = chats.id), created_at)
             """)
+
+        # v2 -> v3: soft-deleted chats, message metadata, activity log.
+        add_column(c, "chats", "deleted_at", "TEXT")
+        add_column(c, "messages", "data", "TEXT")
+        if c.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'moderation_log'").fetchone():
+            c.execute("""
+                INSERT INTO audit_log (created_at, user_id, username, action, conversation_id, detail)
+                SELECT l.created_at, l.user_id, u.username, 'ask', l.chat_id,
+                       json_object('question', l.content, 'status', 'blocked', 'stage', l.stage,
+                                   'checker', l.checker, 'verdict', l.verdict, 'reason', l.detail)
+                FROM moderation_log l LEFT JOIN users u ON u.id = l.user_id
+                ORDER BY l.id
+            """)
+            c.execute("DROP TABLE moderation_log")
+
         c.executescript(INDEXES)
         c.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
@@ -147,7 +173,12 @@ def get_user_by_name(username: str) -> Optional[sqlite3.Row]:
 def list_users() -> List[sqlite3.Row]:
     with connect() as c:
         return c.execute("""
-            SELECT u.*, (SELECT COUNT(*) FROM chats ch WHERE ch.user_id = u.id) AS chat_count
+            SELECT u.*,
+                (SELECT COUNT(*) FROM chats ch WHERE ch.user_id = u.id AND ch.deleted_at IS NULL) AS chats,
+                (SELECT COUNT(*) FROM chats ch WHERE ch.user_id = u.id AND ch.deleted_at IS NOT NULL) AS deleted_chats,
+                (SELECT COUNT(*) FROM messages m JOIN chats ch ON ch.id = m.chat_id
+                    WHERE ch.user_id = u.id AND m.role = 'user') AS questions,
+                (SELECT MAX(created_at) FROM audit_log a WHERE a.user_id = u.id) AS last_activity
             FROM users u ORDER BY u.username COLLATE NOCASE
         """).fetchall()
 
@@ -180,6 +211,7 @@ def touch_login(user_id: int):
 
 
 def delete_user(user_id: int):
+    """Remove the account and all of its chats. Activity log entries keep the username."""
     with connect() as c:
         c.execute("DELETE FROM messages WHERE chat_id IN (SELECT id FROM chats WHERE user_id = ?)", (user_id,))
         c.execute("DELETE FROM chats WHERE user_id = ?", (user_id,))
@@ -219,140 +251,3 @@ def delete_user_sessions(user_id: int, keep_token_hash: str = None):
             "DELETE FROM sessions WHERE user_id = ? AND token_hash IS NOT ?",
             (user_id, keep_token_hash),
         )
-
-# =========================================
-# Chats & messages
-# =========================================
-
-def create_chat(user_id: int, title: str) -> str:
-    chat_id = str(uuid.uuid4())
-    stamp = now()
-    with connect() as c:
-        c.execute(
-            "INSERT INTO chats (id, title, created_at, user_id, updated_at) VALUES (?, ?, ?, ?, ?)",
-            (chat_id, title, stamp, user_id, stamp),
-        )
-    return chat_id
-
-
-def get_chat(chat_id: str) -> Optional[sqlite3.Row]:
-    with connect() as c:
-        return c.execute("SELECT * FROM chats WHERE id = ?", (chat_id,)).fetchone()
-
-
-def list_chats(user_id: int) -> List[sqlite3.Row]:
-    with connect() as c:
-        return c.execute(
-            "SELECT id, title FROM chats WHERE user_id = ? ORDER BY updated_at DESC",
-            (user_id,),
-        ).fetchall()
-
-
-def chat_turns(chat_id: str) -> List[tuple]:
-    """Saved (question, answer) pairs, oldest first."""
-    with connect() as c:
-        rows = c.execute(
-            "SELECT role, content FROM messages WHERE chat_id = ? ORDER BY id ASC", (chat_id,)
-        ).fetchall()
-
-    turns, question = [], None
-    for row in rows:
-        if row["role"] == "user":
-            question = row["content"]
-        elif row["role"] == "assistant" and question is not None:
-            turns.append((question, row["content"]))
-            question = None
-    return turns
-
-
-def add_exchange(chat_id: str, question: str, answer: str):
-    stamp = now()
-    with connect() as c:
-        c.executemany(
-            "INSERT INTO messages (chat_id, role, content, created_at) VALUES (?, ?, ?, ?)",
-            [(chat_id, "user", question, stamp), (chat_id, "assistant", answer, stamp)],
-        )
-        c.execute("UPDATE chats SET updated_at = ? WHERE id = ?", (stamp, chat_id))
-
-
-def delete_chat(chat_id: str):
-    with connect() as c:
-        c.execute("DELETE FROM messages WHERE chat_id = ?", (chat_id,))
-        c.execute("DELETE FROM chats WHERE id = ?", (chat_id,))
-
-
-def delete_user_chats(user_id: int) -> int:
-    with connect() as c:
-        c.execute("DELETE FROM messages WHERE chat_id IN (SELECT id FROM chats WHERE user_id = ?)", (user_id,))
-        return c.execute("DELETE FROM chats WHERE user_id = ?", (user_id,)).rowcount
-
-
-def admin_list_chats(user_id: Optional[int] = None, search: str = "", limit: int = 500) -> List[sqlite3.Row]:
-    sql = """
-        SELECT ch.id, ch.title, ch.updated_at, ch.user_id,
-               COALESCE(u.username, '(deleted)') AS username,
-               (SELECT COUNT(*) FROM messages m WHERE m.chat_id = ch.id) AS message_count
-        FROM chats ch LEFT JOIN users u ON u.id = ch.user_id
-        WHERE 1 = 1
-    """
-    params: list = []
-    if user_id is not None:
-        sql += " AND ch.user_id = ?"
-        params.append(user_id)
-    if search:
-        sql += """ AND (ch.title LIKE ? OR EXISTS (
-                    SELECT 1 FROM messages m WHERE m.chat_id = ch.id AND m.content LIKE ?))"""
-        params += [f"%{search}%", f"%{search}%"]
-    sql += " ORDER BY ch.updated_at DESC LIMIT ?"
-    params.append(limit)
-    with connect() as c:
-        return c.execute(sql, params).fetchall()
-
-# =========================================
-# Moderation log
-# =========================================
-
-def log_moderation(user_id, chat_id, stage, checker, verdict, detail, content):
-    with connect() as c:
-        c.execute(
-            """INSERT INTO moderation_log
-               (user_id, chat_id, stage, checker, verdict, detail, content, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            (user_id, chat_id, stage, checker, verdict, detail, (content or "")[:4000], now()),
-        )
-
-
-def list_moderation(user_id: Optional[int] = None, limit: int = 500) -> List[sqlite3.Row]:
-    sql = """
-        SELECT l.*, COALESCE(u.username, '(deleted)') AS username
-        FROM moderation_log l LEFT JOIN users u ON u.id = l.user_id
-    """
-    params: list = []
-    if user_id is not None:
-        sql += " WHERE l.user_id = ?"
-        params.append(user_id)
-    sql += " ORDER BY l.id DESC LIMIT ?"
-    params.append(limit)
-    with connect() as c:
-        return c.execute(sql, params).fetchall()
-
-
-def clear_moderation() -> int:
-    with connect() as c:
-        return c.execute("DELETE FROM moderation_log").rowcount
-
-# =========================================
-# Stats
-# =========================================
-
-def stats() -> dict:
-    since = (datetime.now() - timedelta(days=1)).isoformat(timespec="seconds")
-    with connect() as c:
-        one = lambda sql, *p: c.execute(sql, p).fetchone()[0]
-        return {
-            "users": one("SELECT COUNT(*) FROM users"),
-            "active_users": one("SELECT COUNT(*) FROM users WHERE is_active = 1"),
-            "chats": one("SELECT COUNT(*) FROM chats"),
-            "messages": one("SELECT COUNT(*) FROM messages"),
-            "blocked_24h": one("SELECT COUNT(*) FROM moderation_log WHERE created_at >= ?", since),
-        }

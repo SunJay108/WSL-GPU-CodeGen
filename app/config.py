@@ -11,6 +11,7 @@ def env_bool(name: str, default: bool) -> bool:
 
 LLAMA_URL = os.getenv("LLAMA_URL", "http://llama-server:8080")
 LLAMA_MODEL = os.getenv("LLAMA_MODEL", "qwen2.5-coder")
+MODEL_LABEL = os.getenv("MODEL_LABEL", "Qwen2.5-Coder 7B")
 GUARD_URL = os.getenv("GUARD_URL", "http://guard:8090")
 
 # llama-server splits CTX_SIZE across LLAMA_PARALLEL slots. Slot 0 serves chat,
@@ -34,6 +35,8 @@ ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin")
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "")
 SESSION_HOURS = int(os.getenv("SESSION_HOURS", "72"))
 COOKIE_SECURE = env_bool("COOKIE_SECURE", False)
+# Let people create their own (non-admin) accounts from the sign-in page.
+ALLOW_SIGNUP = env_bool("ALLOW_SIGNUP", False)
 
 # =========================================
 # Filter policy
