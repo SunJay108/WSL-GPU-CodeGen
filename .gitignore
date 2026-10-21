@@ -12,3 +12,7 @@ data/*
 # Python
 __pycache__/
 *.pyc
+
+# Offline PyTorch wheels for the guard image
+guard/wheels/*
+!guard/wheels/.gitkeep

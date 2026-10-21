@@ -1,0 +1,5 @@
+# The project runs in Linux containers (synced into WSL), so keep LF everywhere.
+* text=auto eol=lf
+*.png binary
+*.gguf binary
+*.safetensors binary

@@ -1,7 +1,7 @@
 models/
 data/
-ollama-qwen7b/
-ollama-qwen7b-backup/
+guard/
 .git/
+.env
 **/__pycache__/
 **/*.pyc
