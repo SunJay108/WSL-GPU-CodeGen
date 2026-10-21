@@ -65,6 +65,8 @@ services:
       ALLOW_SIGNUP: ${ALLOW_SIGNUP:-false}
       REQUIRE_ENGLISH: ${REQUIRE_ENGLISH:-true}
       BLOCK_CONTROVERSIAL: ${BLOCK_CONTROVERSIAL:-true}
+      # Banned words: inline list here, and/or a file at ./data/banned_words.txt.
+      BANNED_WORDS: ${BANNED_WORDS:-}
       COOKIE_SECURE: ${COOKIE_SECURE:-false}
     ports:
       - "7860:7860"

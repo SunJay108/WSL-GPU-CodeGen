@@ -68,13 +68,20 @@ docker compose exec codegen python users.py reset-password admin
 
 | Stage | Check | Blocks |
 |---|---|---|
+| Question | Banned-words blocklist | Any message containing a banned word, even a valid coding one |
 | Question | Qwen3Guard-Gen-0.6B | Unsafe content and jailbreak attempts (and *Controversial*, see `BLOCK_CONTROVERSIAL`) |
 | Question | Qwen3Guard-Stream-0.6B (query head) | Unsafe content |
 | Question | Coder model as a classifier (grammar-constrained) | Anything not about software development, and non-English questions (`REQUIRE_ENGLISH`) |
-| Answer, while streaming | Qwen3Guard-Stream-0.6B, token by token | Unsafe output; text is shown only after it has been checked |
-| Answer, when finished | Qwen3Guard-Gen-0.6B + topic classifier | Unsafe or off-topic answers, which are withheld |
+| Answer, while streaming | Qwen3Guard-Stream-0.6B, token by token, + banned words | Unsafe or banned output; text is shown only after it has been checked |
+| Answer, when finished | Qwen3Guard-Gen-0.6B + banned words + topic classifier | Unsafe, banned, off-topic or non-English answers, which are withheld |
 
 If a check cannot run (for example, the guard service is down), the message is blocked, not let through. A blocked question stays in the chat with a notice saying why, but is never sent to the model as context. Every question, with the verdict and which check blocked it, is recorded in the admin panel's **Activity** log.
+
+### Banned words
+
+The banned-words list is the bluntest layer: it blocks a message outright — before any model runs — even when the message is entirely about code. The operator supplies the list (the repo ships none): inline in the `BANNED_WORDS` setting, and/or one word or short phrase per line in `data/banned_words.txt` (copy `banned_words.example.txt` to start). The file is re-read when it changes, so edits take effect without a restart, and the same list applies to answers.
+
+Matching is case-insensitive, accent-folded and leetspeak-aware, so `Forbïdden`, `FORBIDDEN` and `f0rb1dden` all match `forbidden`. Words of four or more letters also match through punctuation or spaces inserted between their letters (`f.o.r.b.i.d.d.e.n`, `f o r b i d d e n`). Every match needs a word boundary on both sides, so a banned `cat` never fires inside `concatenate` or `category`, and a phrase matches only when its words appear together in order.
 
 ## Chat history and privacy
 
@@ -94,8 +101,11 @@ When users delete a chat (or all their chats), it disappears for them but is kep
 | `GUARD_STREAM_INT8` | `false` | On CPU, run Qwen3Guard-Stream with int8 weights: answers stream faster, but in testing one prompt-level verdict changed (Qwen3Guard-Gen, which always runs in full precision, still blocked it) |
 | `ADMIN_USERNAME` / `ADMIN_PASSWORD` | `admin` / generated | First admin, created only when no users exist |
 | `ALLOW_SIGNUP` | `false` | Show *Create account* on the sign-in page (new accounts are normal users) |
-| `REQUIRE_ENGLISH` | `true` | Reject questions not written in English |
+| `REQUIRE_ENGLISH` | `true` | Reject questions (and answers) not written in English |
 | `BLOCK_CONTROVERSIAL` | `true` | Also block content Qwen3Guard rates *Controversial* |
+| `BANNED_WORDS` | *(empty)* | Comma-separated banned words, added to those in `data/banned_words.txt` |
+| `BANNED_WORDS_FILE` | `/app/data/banned_words.txt` | Blocklist file path inside the container (maps to `./data/banned_words.txt`) |
+| `BANNED_WORDS_MAX_GAP` | `2` | Max separator characters allowed between a word's letters when catching obfuscation |
 | `COOKIE_SECURE` | `false` | Set to `true` when serving over HTTPS |
 
 ### Building the guard image offline

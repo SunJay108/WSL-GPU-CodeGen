@@ -16,6 +16,7 @@
   const CHECKERS = {
     "guard-gen": "Qwen3Guard-Gen",
     "guard-stream": "Qwen3Guard-Stream",
+    "banned-words": "banned words",
     topic: "topic check",
     input: "input check",
     unavailable: "filter unreachable",

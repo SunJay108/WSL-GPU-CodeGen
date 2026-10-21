@@ -1,0 +1,23 @@
+# Banned-words blocklist (example).
+#
+# Copy this file to data/banned_words.txt and put your own words in it:
+#     cp banned_words.example.txt data/banned_words.txt
+#
+# Rules:
+#   - one word or short phrase per line
+#   - '#' starts a comment; blank lines are ignored
+#   - matching is case-insensitive, accent-folded and leetspeak-aware
+#     ("Forbïdden", "FORBIDDEN" and "f0rb1dden" all match "forbidden")
+#   - words of 4+ letters also match through punctuation or spaces between
+#     their letters ("f.o.r.b.i.d.d.e.n", "f o r b i d d e n")
+#   - a match needs a word boundary on both sides, so "cat" never fires inside
+#     "concatenate" or "category"
+#   - a phrase matches only when its words appear together, in order
+#
+# The file is re-read when it changes, so edits take effect without a restart.
+# It applies to both questions and answers.
+
+# --- examples (delete these) ---
+# forbidden
+# internal-project-name
+# acme corp
