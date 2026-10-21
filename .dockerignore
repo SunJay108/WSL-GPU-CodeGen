@@ -1,0 +1,7 @@
+models/
+data/
+ollama-qwen7b/
+ollama-qwen7b-backup/
+.git/
+**/__pycache__/
+**/*.pyc

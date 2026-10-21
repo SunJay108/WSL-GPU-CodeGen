@@ -1,0 +1,14 @@
+# Model weights (multi-GB, exceed GitHub's 100 MB file limit)
+models/*
+!models/.gitkeep
+
+# Local chat history
+data/*
+!data/.gitkeep
+
+# Local environment (copy from .env.example)
+.env
+
+# Python
+__pycache__/
+*.pyc

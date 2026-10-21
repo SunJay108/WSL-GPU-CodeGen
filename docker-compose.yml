@@ -1,0 +1,45 @@
+services:
+  llama-server:
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda
+    pull_policy: never
+    container_name: codegen-llama
+    gpus: all
+    volumes:
+      - ./models:/models:ro
+    command:
+      - "-m"
+      - "/models/${MODEL_FILE:-qwen2.5-coder-7b-instruct-q4_k_m.gguf}"
+      - "--alias"
+      - "qwen2.5-coder"
+      - "--host"
+      - "0.0.0.0"
+      - "--port"
+      - "8080"
+      - "--ctx-size"
+      - "${CTX_SIZE:-4096}"
+      - "--n-gpu-layers"
+      - "${GPU_LAYERS:-20}"
+      - "--threads"
+      - "${CPU_THREADS:-8}"
+      - "--parallel"
+      - "1"
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+
+  codegen:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: codegen-ui
+    environment:
+      LLAMA_URL: http://llama-server:8080
+      LLAMA_MODEL: qwen2.5-coder
+    ports:
+      - "7860:7860"
+    volumes:
+      - ./app:/app/app
+      - ./data:/app/data
+    depends_on:
+      - llama-server
+    restart: unless-stopped
