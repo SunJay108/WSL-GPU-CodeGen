@@ -32,6 +32,7 @@ services:
   guard:
     build:
       context: ./guard
+    image: codegen-gpu-guard:latest
     container_name: codegen-guard
     gpus: all
     environment:
@@ -53,6 +54,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    image: codegen-gpu-codegen:latest
     container_name: codegen-ui
     environment:
       LLAMA_URL: http://llama-server:8080

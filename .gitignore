@@ -16,3 +16,7 @@ __pycache__/
 # Offline PyTorch wheels for the guard image
 guard/wheels/*
 !guard/wheels/.gitkeep
+
+# Offline export artifacts
+dist/
+.export.*
