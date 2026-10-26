@@ -56,6 +56,23 @@ Options:
 | `-Distro <name>` | Back up a different distribution. Default: `Ubuntu-22.04`. |
 | `-Yes` | Don't ask before stopping the distribution. |
 
+### Publish it as a GitHub release (optional)
+
+GitHub release files must be under 2 GB, so `scripts/release_backup.ps1` splits
+the archive into 1 GB parts (`<archive>.part01`, `.part02`, …). It stages them
+with the restore files in `dist\<backup folder>.release\` and uploads them with
+the GitHub CLI (`gh`, signed in):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\release_backup.ps1 -Tag v2.0.0
+```
+
+If the upload stops, run the same command again. Files already uploaded are
+skipped. Add `-PrepareOnly` to split and stage the files without uploading.
+
+> The repository is public, so **anyone can download the release**, including
+> everything listed in section 1.
+
 ## 3. What the offline PC needs
 
 - **Windows 11**, or Windows 10 21H2 or later, 64-bit, with **virtualization
@@ -94,6 +111,11 @@ Install the NVIDIA driver by running its installer.
 
 1. Copy the whole `Ubuntu-22.04-backup-<date>` folder to the offline PC. A local
    disk is faster than running from the USB stick.
+
+   **From a GitHub release:** download **all** of the release's files (every
+   `.partNN` and the small files) into one folder, then copy that folder.
+   `restore.cmd` joins the parts first. It needs about 15 GB more free space
+   while it does, and you can delete the parts afterwards.
 2. Double-click **`restore.cmd`**, or run it from a terminal to pass options:
 
    ```powershell
@@ -103,7 +125,7 @@ Install the NVIDIA driver by running its installer.
 
 The script:
 
-1. checks WSL;
+1. checks WSL, and joins the parts if the backup came from a release;
 2. verifies the checksum, so a damaged copy is caught before import;
 3. checks free disk space;
 4. installs `wslconfig.txt` as `%USERPROFILE%\.wslconfig`, but only if the PC has
@@ -123,6 +145,9 @@ Options:
 | `-SetDefault` | Make it the distribution that plain `wsl` opens. |
 | `-Start` | Start CodeGen right after restoring. |
 | `-Archive <file>` | Use a specific archive, if the folder holds more than one. |
+
+To join the parts by hand instead (in Ubuntu or any Linux):
+`cat Ubuntu-22.04-<date>.tar.gz.part?? > Ubuntu-22.04-<date>.tar.gz`
 | `-SkipHashCheck` | Skip the checksum check (not recommended). |
 
 ### Manual restore (instead of `restore.cmd`)

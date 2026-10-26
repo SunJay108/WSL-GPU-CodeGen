@@ -135,6 +135,7 @@ Set-Content -Encoding ASCII -Path (Join-Path $Bundle 'backup-info.txt') -Value @
     "default_user=$user"
     "used_bytes=$used"
     "archive=$Archive"
+    "archive_bytes=$archiveSize"
     "project_dir=$ProjectDir"
     "images=$($images -join ',')"
 )

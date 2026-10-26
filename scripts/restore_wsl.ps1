@@ -15,7 +15,8 @@ param(
     [string]$Name = '',
     # Where its virtual disk (ext4.vhdx) goes. Default: <system drive>\WSL\<Name>
     [string]$InstallDir = '',
-    # Default: the single .tar / .tar.gz / .tar.xz next to this script.
+    # Default: the single .tar / .tar.gz / .tar.xz next to this script, or the
+    # .partNN files of one (joined first).
     [string]$Archive = '',
     # Make it the distribution that plain 'wsl' opens.
     [switch]$SetDefault,
@@ -43,6 +44,38 @@ function InDistro {
 function Get-WslDistros {
     Get-ChildItem 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Lxss' -ErrorAction SilentlyContinue |
         ForEach-Object { (Get-ItemProperty $_.PSPath).DistributionName }
+}
+
+# A backup downloaded from a GitHub release comes split into <archive>.part01,
+# .part02, ... (release_backup.ps1). Join them back into the archive.
+function Join-Parts {
+    $parts = @(Get-ChildItem $Here -File | Where-Object { $_.Name -match '\.tar(\.gz|\.xz)?\.part\d+$' } | Sort-Object Name)
+    if ($parts.Count -eq 0) { return }
+    $target = Join-Path $Here ($parts[0].Name -replace '\.part\d+$', '')
+    $others = @($parts | Where-Object { ($_.Name -replace '\.part\d+$', '') -ne (Split-Path $target -Leaf) })
+    if ($others.Count -gt 0) { Die "Parts of more than one archive in $Here. Keep one set, or use -Archive <file>." }
+    if ($info['parts'] -and $parts.Count -ne [int]$info['parts']) {
+        Die "Found $($parts.Count) of $($info['parts']) parts. Download the missing ones into $Here first."
+    }
+    $total = ($parts | Measure-Object Length -Sum).Sum
+    if ($info['archive_bytes'] -and $total -ne [int64]$info['archive_bytes']) {
+        Die "The parts add up to $total bytes, expected $($info['archive_bytes']). A download is incomplete; download it again."
+    }
+    $free = (Get-PSDrive -Name (Split-Path -Qualifier $Here).TrimEnd(':')).Free
+    if ($free -lt $total) { Die "Joining needs $(Size $total) free next to the parts, only $(Size $free) available." }
+
+    Write-Host "   joining $($parts.Count) parts into $(Split-Path $target -Leaf) ..."
+    $tmp = "$target.joining"
+    $out = [IO.File]::Create($tmp)
+    try {
+        foreach ($p in $parts) {
+            $in = [IO.File]::OpenRead($p.FullName)
+            try { $in.CopyTo($out, 4MB) } finally { $in.Dispose() }
+        }
+    } finally { $out.Dispose() }
+    Move-Item $tmp $target
+    Ok 'joined (you can delete the .part files after the restore)'
+    Get-Item $target
 }
 
 # backup-info.txt: key=value lines written by backup_wsl.ps1
@@ -77,6 +110,7 @@ if ((Get-WslDistros) -contains $Name) {
 Step 'Finding the archive'
 if (-not $Archive) {
     $found = @(Get-ChildItem $Here -File | Where-Object { $_.Name -match '\.tar(\.gz|\.xz)?$' })
+    if ($found.Count -eq 0) { $found = @(Join-Parts) }
     if ($found.Count -ne 1) { Die "Expected one .tar/.tar.gz/.tar.xz in $Here, found $($found.Count). Use -Archive <file>." }
     $Archive = $found[0].FullName
 }
