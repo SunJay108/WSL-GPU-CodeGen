@@ -10,6 +10,11 @@
     Needs the GitHub CLI (gh), signed in. If the upload stops, run the same
     command again: files already uploaded are skipped.
 
+    On a slow link: when the upload stays under -MinKBps for -SlowMinutes, the
+    current file is stopped and retried after -PauseMinutes (doubling while it
+    stays slow, up to 30). GitHub cannot resume a half-uploaded file, so only
+    that one part starts over.
+
     The repository is public: anyone can download what you attach.
 
 .EXAMPLE
@@ -25,6 +30,11 @@ param(
     # Markdown release notes. Default: short notes on how to restore.
     [string]$NotesFile = '',
     [int]$PartMB = 1024,
+    # "Too slow": under this many KB/s for this many minutes.
+    [int]$MinKBps = 100,
+    [int]$SlowMinutes = 3,
+    # First wait before retrying a file stopped for being too slow.
+    [int]$PauseMinutes = 10,
     # Split and stage the files, but do not create the release or upload.
     [switch]$PrepareOnly
 )
@@ -38,6 +48,40 @@ function Size($bytes) {
     if ($bytes -ge 1GB) { '{0:N1} GB' -f ($bytes / 1GB) }
     elseif ($bytes -ge 1MB) { '{0:N1} MB' -f ($bytes / 1MB) }
     else { '{0:N0} KB' -f [math]::Ceiling($bytes / 1KB) }
+}
+
+# Bytes sent by the physical network adapters, to measure the upload speed.
+function Get-SentBytes {
+    (Get-NetAdapter -Physical | Get-NetAdapterStatistics | Measure-Object SentBytes -Sum).Sum
+}
+
+# Upload one file with gh while watching the speed. Returns 'ok', 'failed', or
+# 'slow' (stopped because it stayed under -MinKBps for -SlowMinutes).
+function Send-Asset($file) {
+    $proc = Start-Process gh -ArgumentList @('release', 'upload', $Tag, "`"$($file.FullName)`"", '--clobber') -WorkingDirectory $Root -NoNewWindow -PassThru
+    $null = $proc.Handle   # keeps ExitCode readable after exit
+    $window = New-Object System.Collections.Queue
+    $startBytes = Get-SentBytes
+    $tick = 0
+    while (-not $proc.WaitForExit(10000)) {
+        $now = [pscustomobject]@{ Time = Get-Date; Bytes = Get-SentBytes }
+        $window.Enqueue($now)
+        if ($window.Count -gt $SlowMinutes * 6) { [void]$window.Dequeue() }
+        $oldest = $window.Peek()
+        $seconds = ($now.Time - $oldest.Time).TotalSeconds
+        $kbps = 0
+        if ($seconds -gt 0) { $kbps = ($now.Bytes - $oldest.Bytes) / 1KB / $seconds }
+        if (++$tick % 30 -eq 0) {   # every 5 minutes
+            $done = [math]::Min(99, 100 * ($now.Bytes - $startBytes) / $file.Length)
+            Write-Host ('   {0}: about {1:N0}% at {2:N0} KB/s' -f $file.Name, $done, $kbps)
+        }
+        if ($window.Count -eq $SlowMinutes * 6 -and $kbps -lt $MinKBps) {
+            Stop-Process -Id $proc.Id -Force
+            Warn ('{0}: {1:N0} KB/s for {2} min, under {3} KB/s' -f $file.Name, $kbps, $SlowMinutes, $MinKBps)
+            return 'slow'
+        }
+    }
+    if ($proc.ExitCode -eq 0) { 'ok' } else { 'failed' }
 }
 
 if (-not $Bundle) {
@@ -129,19 +173,30 @@ Whole WSL {0} system backup (made {1}): Ubuntu, Docker, the NVIDIA Container Too
 
     Step "Uploading $($assets.Count) files"
     $have = @{}
-    foreach ($a in (& gh release view $Tag --json assets | ConvertFrom-Json).assets) { $have[$a.name] = [int64]$a.size }
+    foreach ($a in (& gh release view $Tag --json assets | ConvertFrom-Json).assets) {
+        if ($a.state -eq 'uploaded' -or -not $a.state) { $have[$a.name] = [int64]$a.size }
+    }
     foreach ($f in $assets) {
         if ($have[$f.Name] -eq $f.Length) { Write-Host "   $($f.Name): already uploaded"; continue }
-        for ($try = 1; $try -le 5; $try++) {
+        $failures = 0
+        $pause = $PauseMinutes
+        while ($true) {
+            Write-Host "   $($f.Name): uploading $(Size $f.Length) ($(Get-Date -Format HH:mm))"
             $started = Get-Date
-            & gh release upload $Tag $f.FullName --clobber
-            if ($LASTEXITCODE -eq 0) { break }
-            Warn "upload of $($f.Name) failed (try $try of 5)"
+            $result = Send-Asset $f
+            if ($result -eq 'ok') { break }
+            if ($result -eq 'slow') {
+                Warn "pausing $pause min, then retrying $($f.Name) (until $((Get-Date).AddMinutes($pause).ToString('HH:mm')))"
+                Start-Sleep -Seconds ($pause * 60)
+                $pause = [math]::Min($pause * 2, 30)
+                continue
+            }
+            if (++$failures -ge 5) { Die "Could not upload $($f.Name). Run the same command again to continue." }
+            Warn "upload of $($f.Name) failed (try $failures of 5)"
             Start-Sleep -Seconds 15
         }
-        if ($LASTEXITCODE -ne 0) { Die "Could not upload $($f.Name). Run the same command again to continue." }
         $seconds = [math]::Max(1, ((Get-Date) - $started).TotalSeconds)
-        Write-Host ('   {0}: {1} at {2:N1} MB/s' -f $f.Name, (Size $f.Length), ($f.Length / 1MB / $seconds))
+        Write-Host ('   {0}: done, {1} at {2:N0} KB/s' -f $f.Name, (Size $f.Length), ($f.Length / 1KB / $seconds))
     }
     Step 'Done'
     & gh release view $Tag --json url --jq .url
