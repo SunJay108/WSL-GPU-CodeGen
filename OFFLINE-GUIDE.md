@@ -8,6 +8,10 @@ time.
 > "Offline" means no internet — it does **not** mean no GPU. CodeGen still needs
 > an NVIDIA GPU to run the model.
 
+> To copy the **whole WSL Ubuntu system** (Docker, GPU toolkit, CodeGen, data)
+> onto an offline Windows PC that has nothing set up yet, see
+> [WSL-BACKUP-GUIDE.md](WSL-BACKUP-GUIDE.md) instead.
+
 ## 1. What's in the bundle
 
 After you extract `codegen-gpu-offline-<date>.tar` you get a folder like:
