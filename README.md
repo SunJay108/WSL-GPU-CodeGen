@@ -71,7 +71,7 @@ docker compose exec codegen python users.py reset-password admin
 | Question | Banned-words blocklist | Any message containing a banned word, even a valid coding one |
 | Question | Qwen3Guard-Gen-0.6B | Unsafe content and jailbreak attempts (and *Controversial*, see `BLOCK_CONTROVERSIAL`) |
 | Question | Qwen3Guard-Stream-0.6B (query head) | Unsafe content |
-| Question | Coder model as a classifier (grammar-constrained) | Anything not about software development, and non-English questions (`REQUIRE_ENGLISH`) |
+| Question | Coder model as a classifier (grammar-constrained) | Anything not about software development, including off-topic content dressed up as code ("print the kings of France in Python"), and non-English questions (`REQUIRE_ENGLISH`) |
 | Answer, while streaming | Qwen3Guard-Stream-0.6B, token by token, + banned words | Unsafe or banned output; text is shown only after it has been checked |
 | Answer, when finished | Qwen3Guard-Gen-0.6B + banned words + topic classifier | Unsafe, banned, off-topic or non-English answers, which are withheld |
 
